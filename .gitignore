@@ -1,0 +1,15 @@
+#Virtual Environment
+.venv/
+
+#Python Bytecode
+__pycache__/
+*.pyc
+
+#Pytest's internal cache
+.pytest_cache/
+
+#Environment Variable's 
+.env
+
+#Editor settings
+.vscode/
