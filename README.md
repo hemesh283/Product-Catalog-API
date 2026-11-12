@@ -5,8 +5,6 @@ A small FastAPI service that serves a static product catalog, with two system-de
 - an **in-memory cache** with a 30-second TTL (`X-Cache: HIT` / `MISS` on every cached response)
 - a **fixed-window rate limiter**: 10 requests per minute per client IP, returning `429 Too Many Requests` with a JSON body and a `Retry-After` header
 
-The goal of the project is not complexity. It is to implement caching and rate limiting correctly, understand every line, and prove the behaviour with tests.
-
 ---
 
 ## Features
