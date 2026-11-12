@@ -52,7 +52,6 @@ Key decisions, and anything that broke and how it was fixed.
 
 **Broke / fixed**
 - My first window formula (divide, subtract 1, round up) gave wrong windows at exact multiples of 60. Replaced with floor division.
-- The VS Code terminal is Command Prompt, so use `cmd` syntax (`for /L`), not PowerShell's `1..11`.
 - Windows started at `:07` past the minute: `time.monotonic()` counts from an arbitrary origin. Every window is still exactly 60 s, so behaviour is correct.
 - Known leak: an entry for a client who never returns stays in `_clients` forever (seen in the manual test).
 
@@ -68,7 +67,3 @@ Key decisions, and anything that broke and how it was fixed.
 - All tests ERRORed with "fixture 'clock' not found": `FakeClock` and the `clock` fixture were lost through a placeholder comment in a partial snippet. Fixed by replacing the whole `conftest.py`. ERROR means setup failed; FAILED means an assertion failed.
 - Mutation testing: `<=` -> `<` makes the limit effectively 9. Only the test asserting all of requests 1-10 return 200 caught it.
 - pytest warns that Starlette's `TestClient` is moving from `httpx` to `httpx2`. It's harmless with pinned versions; revisit later.
-
-## To do before the review
-
-- Rewrite `TTLCache` and `FixedWindowRateLimiter` from scratch myself and run the tests against them.
