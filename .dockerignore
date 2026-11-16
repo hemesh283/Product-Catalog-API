@@ -1,0 +1,12 @@
+# Never send these to the build
+.git
+.venv
+.env
+.vscode
+.pytest_cache
+**/__pycache__
+**/*.pyc
+
+# Not needed in any image
+docs
+*.md
