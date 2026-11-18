@@ -304,3 +304,11 @@ These are deliberate simplifications for an assignment-sized project, and what a
 ## AI usage
 
 This project was built with AI assistance as part of the assignment. What was asked, what was suggested, and what I changed or verified is documented step by step in [`AI_USAGE.md`](AI_USAGE.md). Design decisions and bugs encountered are recorded in [`NOTES.md`](NOTES.md).
+
+Install the pinned dependencies (app + test tools):
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+`requirements.txt` holds only what the app needs to run (used by the Docker image); `requirements-dev.txt` adds `httpx` and `pytest` on top of it.
