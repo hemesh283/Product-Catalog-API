@@ -1,26 +1,38 @@
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse                      
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
 from app.cache import TTLCache
 from app.data import PRODUCTS
 from app.models import Product
-from app.rate_limiter import FixedWindowRateLimiter             
+from app.rate_limiter import FixedWindowRateLimiter
 
+API_PREFIX = "/api"
 CACHE_TTL_SECONDS = 30
-RATE_LIMIT = 10                                                  
-RATE_LIMIT_WINDOW_SECONDS = 60                                   
-RATE_LIMIT_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}  
+RATE_LIMIT = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_EXEMPT_PATHS = {
+    "/health",
+    f"{API_PREFIX}/docs",
+    f"{API_PREFIX}/openapi.json",
+    f"{API_PREFIX}/redoc",
+}
 
-app = FastAPI(title="Mini Product Catalog API")
+app = FastAPI(
+    title="Mini Product Catalog API",
+    docs_url=f"{API_PREFIX}/docs",
+    redoc_url=f"{API_PREFIX}/redoc",
+    openapi_url=f"{API_PREFIX}/openapi.json",
+)
+router = APIRouter(prefix=API_PREFIX)
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
-rate_limiter = FixedWindowRateLimiter(                          
+rate_limiter = FixedWindowRateLimiter(
     limit=RATE_LIMIT, window_seconds=RATE_LIMIT_WINDOW_SECONDS
 )
 
 
-@app.middleware("http")                                          
+@app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     if request.url.path in RATE_LIMIT_EXEMPT_PATHS:
         return await call_next(request)
@@ -73,11 +85,14 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/products")
+@router.get("/products")
 def list_products(request: Request, response: Response) -> list[Product]:
     return get_or_compute(request, response, lambda: list(PRODUCTS.values()))
 
 
-@app.get("/products/{product_id}")
+@router.get("/products/{product_id}")
 def get_product(product_id: int, request: Request, response: Response) -> Product:
     return get_or_compute(request, response, lambda: find_product(product_id))
+
+
+app.include_router(router)
