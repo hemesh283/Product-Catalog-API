@@ -60,6 +60,9 @@ product-catalog-api/
 ├── docs/                  # evidence: transcripts and screenshots
 ├── pytest.ini
 ├── requirements.txt
+├── Dockerfile             # multi-stage build: base, test, runtime
+├── .dockerignore          # keeps .git, .venv, secrets out of the build
+├── requirements-dev.txt   # requirements.txt + test tools
 ├── AI_USAGE.md
 ├── NOTES.md
 └── README.md
@@ -110,6 +113,47 @@ uvicorn app.main:app --reload
 - Interactive docs (Swagger UI): http://127.0.0.1:8000/docs
 
 ---
+
+## Run with Docker
+
+### From Docker Hub (no clone needed)
+
+```bash
+docker run -d --name catalog -p 8000:8000 hemesh283/product-catalog-api:1.0.0
+```
+
+Then open http://localhost:8000/docs. Stop it with `docker stop catalog && docker rm catalog`.
+
+### Build it yourself
+
+The `Dockerfile` has three stages:
+
+| Stage | Contents | Purpose |
+| --- | --- | --- |
+| `base` | `python:3.14-slim` + production dependencies | Shared, cached by both targets |
+| `test` | `base` + `httpx`, `pytest`, `tests/` | Runs the test suite on Linux |
+| `runtime` | `base` + `app/` only, non-root user, healthcheck | The image that ships |
+
+```bash
+# Run the tests inside a container
+docker build --target test -t catalog-api:test .
+docker run --rm catalog-api:test
+
+# Build and run the app
+docker build --target runtime -t catalog-api:latest .
+docker run -d --name catalog -p 8000:8000 catalog-api:latest
+docker ps    # STATUS shows (healthy) once the healthcheck passes
+```
+
+### Image design decisions
+
+- **Slim base image:** smaller pulls and a smaller attack surface than the full Python image.
+- **Dependencies before code:** `requirements.txt` is copied and installed before `app/`, so code changes reuse the cached dependency layer.
+- **No tests in the runtime image:** the `runtime` stage copies only `app/`.
+- **Non-root user:** the app runs as `appuser`; the code is owned by root, so the app cannot modify itself.
+- **Healthcheck:** Docker polls `/health` every 30 s using Python's `urllib` (the slim image has no `curl`). `/health` is exempt from rate limiting, so health checks can never trigger a 429.
+- **`--host 0.0.0.0`:** inside a container, `127.0.0.1` is the container's own loopback and is unreachable through port mapping.
+- **One worker:** the cache and rate-limit counters live in process memory, so multiple workers would each keep separate counters and loosen the limit.
 
 ## API reference
 
@@ -293,11 +337,12 @@ These are deliberate simplifications for an assignment-sized project, and what a
 | **Burst at window edges** | 10 requests at 0:59 and 10 at 1:01 all pass: up to 2x the limit in 2 seconds | Sliding window (count the last 60 s from now) or token bucket (steady refill, capped bursts) |
 | **State is per process** | Cache and counters are dicts in one process's memory. With 4 workers, a client effectively gets 40 requests per minute, and each worker has its own cache (lower hit rate, possibly inconsistent data) | A shared store such as Redis, with atomic increments and built-in key expiry |
 | **Lost on restart** | In-memory state disappears when the process stops | Redis or another external store |
-| **Client IP behind a proxy** | `request.client.host` is whoever opened the connection; behind a load balancer every user shares the proxy's IP and one limit | Read `X-Forwarded-For`, trusting it only from known proxies, because clients can forge it |
+| **Client IP behind a proxy** | `request.client.host` is whoever opened the connection. Behind a load balancer, or through Docker's port mapping (every outside request arrives from the bridge gateway `172.17.0.1`), all users share one IP and one limit | Put a reverse proxy in front that sets `X-Forwarded-For`, and trust it only from that proxy |
 | **Memory growth** | Expired cache entries that are never read again, and clients who never return, stay in memory | Periodic sweep, size cap with LRU eviction, or Redis TTLs |
 | **Thread safety** | Plain `def` routes run in a thread pool, so the cache dict can be accessed from several threads at once | A lock around cache access, or an external store with atomic operations |
 | **Window alignment** | `time.monotonic()` starts from an arbitrary origin, so windows do not align with clock minutes (and differ between machines) | Acceptable for a single process; a shared store gives one clock for all servers |
 | **Cache key normalisation** | `?a=1&b=2` and `?b=2&a=1` are different keys | Sort query parameters when building the key |
+| **Floating base image tag** | `python:3.14-slim` always points to the newest 3.14 patch, so rebuilds can differ | Pin a full tag (`python:3.14.10-slim`) or an image digest |
 
 ---
 
