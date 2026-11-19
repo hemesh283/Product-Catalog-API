@@ -7,6 +7,17 @@ const priceFormatter = new Intl.NumberFormat("en-IN", {
   currency: "INR",
 });
 
+let countdownTimer = null;
+
+class RateLimitError extends Error {
+  constructor(retryAfter, limit, windowSeconds) {
+    super("Too many requests");
+    this.retryAfter = retryAfter;
+    this.limit = limit;
+    this.windowSeconds = windowSeconds;
+  }
+}
+
 function formatPrice(paise) {
   return priceFormatter.format(paise / 100);
 }
@@ -15,6 +26,12 @@ async function fetchJson(url) {
   const started = performance.now();
   const response = await fetch(url);
   const elapsedMs = Math.round(performance.now() - started);
+
+  if (response.status === 429) {
+    const body = await response.json().catch(() => ({}));
+    const retryAfter = Number(response.headers.get("Retry-After")) || 60;
+    throw new RateLimitError(retryAfter, body.limit, body.window_seconds);
+  }
 
   if (!response.ok) {
     throw new Error(`Request failed with status ${response.status}`);
@@ -33,6 +50,42 @@ function renderMeta({ cache, elapsedMs }) {
   badge.className = cache === "HIT" ? "badge hit" : "badge miss";
   badge.textContent = `Cache ${cache}`;
   metaEl.append(badge, `${elapsedMs} ms`);
+}
+
+function showRateLimit(error) {
+  let remaining = error.retryAfter;
+
+  const box = document.createElement("div");
+  box.className = "notice";
+
+  const title = document.createElement("strong");
+  title.textContent = "You're browsing a little too fast.";
+
+  const text = document.createElement("p");
+
+  box.append(title, text);
+  viewEl.replaceChildren(box);
+  statusEl.textContent = "";
+
+  const limitText = error.limit
+    ? `This catalog allows ${error.limit} requests every ${error.windowSeconds} seconds. `
+    : "";
+
+  function update() {
+    text.textContent = `${limitText}Loading again in ${remaining} s…`;
+  }
+
+  update();
+  countdownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      router();
+      return;
+    }
+    update();
+  }, 1000);
 }
 
 function createImage(product) {
@@ -98,6 +151,11 @@ function renderDetail(product) {
 }
 
 async function router() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+
   const match = location.hash.match(/^#\/products\/(\d+)$/);
   statusEl.textContent = "Loading…";
   metaEl.replaceChildren();
@@ -115,7 +173,11 @@ async function router() {
     }
     statusEl.textContent = "";
   } catch (error) {
-    statusEl.textContent = `Could not load: ${error.message}`;
+    if (error instanceof RateLimitError) {
+      showRateLimit(error);
+    } else {
+      statusEl.textContent = `Could not load: ${error.message}`;
+    }
   }
 }
 

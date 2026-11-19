@@ -23,3 +23,5 @@ a { color: inherit; text-decoration: none; }
 .badge { padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 0.8rem; }
 .badge.hit { background: #d1f5dc; color: #116329; }
 .badge.miss { background: #fde2c8; color: #8a4b00; }
+.notice { background: #fff4e5; border: 1px solid #f5c48a; border-radius: 12px; padding: 16px 20px; max-width: 520px; }
+.notice p { margin: 6px 0 0; }
