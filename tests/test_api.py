@@ -5,13 +5,13 @@ def test_health_returns_ok(client):
 
 
 def test_list_products_returns_all_products(client):
-    response = client.get("/products")
+    response = client.get("/api/products")
     assert response.status_code == 200
     assert len(response.json()) == 7
 
 
 def test_get_product_returns_matching_product(client):
-    response = client.get("/products/3")
+    response = client.get("/api/products/3")
     assert response.status_code == 200
     body = response.json()
     assert body["id"] == 3
@@ -19,50 +19,50 @@ def test_get_product_returns_matching_product(client):
 
 
 def test_get_missing_product_returns_404(client):
-    response = client.get("/products/999")
+    response = client.get("/api/products/999")
     assert response.status_code == 404
     assert response.json() == {"detail": "Product 999 not found"}
 
 
 def test_invalid_product_id_returns_422(client):
-    response = client.get("/products/abc")
+    response = client.get("/api/products/abc")
     assert response.status_code == 422
 
 # ---------- Caching ----------
 
 def test_first_request_is_miss_then_hit(client):
-    first = client.get("/products/3")
-    second = client.get("/products/3")
+    first = client.get("/api/products/3")
+    second = client.get("/api/products/3")
     assert first.headers["X-Cache"] == "MISS"
     assert second.headers["X-Cache"] == "HIT"
     assert first.json() == second.json()
 
 
 def test_product_list_is_cached(client):
-    assert client.get("/products").headers["X-Cache"] == "MISS"
-    assert client.get("/products").headers["X-Cache"] == "HIT"
+    assert client.get("/api/products").headers["X-Cache"] == "MISS"
+    assert client.get("/api/products").headers["X-Cache"] == "HIT"
 
 
 def test_cache_still_hits_at_exactly_ttl(client, clock):
-    client.get("/products/3")
+    client.get("/api/products/3")
     clock.advance(30)
-    assert client.get("/products/3").headers["X-Cache"] == "HIT"
+    assert client.get("/api/products/3").headers["X-Cache"] == "HIT"
 
 
 def test_cache_expires_after_ttl(client, clock):
-    client.get("/products/3")
+    client.get("/api/products/3")
     clock.advance(31)
-    assert client.get("/products/3").headers["X-Cache"] == "MISS"
+    assert client.get("/api/products/3").headers["X-Cache"] == "MISS"
 
 
 def test_cache_is_separate_per_path(client):
-    client.get("/products/3")
-    assert client.get("/products/4").headers["X-Cache"] == "MISS"
+    client.get("/api/products/3")
+    assert client.get("/api/products/4").headers["X-Cache"] == "MISS"
 
 
 def test_missing_product_is_not_cached(client):
-    client.get("/products/999")
-    second = client.get("/products/999")
+    client.get("/api/products/999")
+    second = client.get("/api/products/999")
     assert second.status_code == 404
     assert "X-Cache" not in second.headers
 
@@ -75,9 +75,9 @@ def test_health_is_not_cached(client):
 
 def test_eleventh_request_is_rate_limited(client):
     for _ in range(10):
-        assert client.get("/products").status_code == 200
+        assert client.get("/api/products").status_code == 200
 
-    response = client.get("/products")
+    response = client.get("/api/products")
     assert response.status_code == 429
     body = response.json()
     assert body["detail"] == "Rate limit exceeded. Try again later."
@@ -90,30 +90,33 @@ def test_eleventh_request_is_rate_limited(client):
 def test_retry_after_is_rounded_up(client, clock):
     clock.advance(15.5)
     for _ in range(10):
-        client.get("/products")
-    assert client.get("/products").json()["retry_after"] == 45
+        client.get("/api/products")
+    assert client.get("/api/products").json()["retry_after"] == 45
 
 
 def test_rate_limit_resets_in_next_window(client, clock):
     for _ in range(11):
-        client.get("/products")
+        client.get("/api/products")
     clock.advance(60)
-    assert client.get("/products").status_code == 200
+    assert client.get("/api/products").status_code == 200
 
 
 def test_rate_limit_is_shared_across_endpoints(client):
     for _ in range(10):
-        client.get("/products")
-    assert client.get("/products/3").status_code == 429
+        client.get("/api/products")
+    assert client.get("/api/products/3").status_code == 429
 
 
 def test_health_is_not_rate_limited(client):
     for _ in range(10):
-        client.get("/products")
+        client.get("/api/products")
     assert client.get("/health").status_code == 200
 
 
 def test_health_requests_do_not_count_towards_limit(client):
     for _ in range(20):
         client.get("/health")
-    assert client.get("/products").status_code == 200
+    assert client.get("/api/products").status_code == 200
+
+def test_unprefixed_product_path_is_gone(client):
+    assert client.get("/products").status_code == 404

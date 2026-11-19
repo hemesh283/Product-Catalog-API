@@ -1,43 +1,63 @@
 # Mini Product Catalog API
 
-A small FastAPI service that serves a static product catalog, with two system-design features built from scratch and tested without waiting on real time:
+A small product catalog built to learn backend and DevOps fundamentals end to end: a FastAPI service with a hand-built **TTL cache** and **fixed-window rate limiter**, a plain HTML/JS **frontend**, an **nginx reverse proxy**, and **Docker Compose** to run it all.
 
-- an **in-memory cache** with a 30-second TTL (`X-Cache: HIT` / `MISS` on every cached response)
-- a **fixed-window rate limiter**: 10 requests per minute per client IP, returning `429 Too Many Requests` with a JSON body and a `Retry-After` header
+- **In-memory cache** with a 30-second TTL (`X-Cache: HIT` / `MISS` on every cached response)
+- **Fixed-window rate limiter**: 10 requests per minute per client IP, returning `429 Too Many Requests` with a JSON body and a `Retry-After` header
+- **Frontend** that makes both features visible: cache badges, response times, a rate-limit countdown and a live "fire 11 requests" demo
+- **nginx** in front: serves the frontend, proxies `/api/...` to FastAPI, and passes the real client IP to the rate limiter
+- **32 pytest tests** using an injectable fake clock, so expiry and rate-limit windows are tested without waiting
+
+The goal is not complexity. It is to implement each concept correctly, understand every line, and prove the behaviour with tests.
 
 ---
 
 ## Features
 
-| Feature | Details |
+| Area | Details |
 | --- | --- |
-| Endpoints | `GET /products`, `GET /products/{product_id}`, `GET /health` |
-| Validation | Pydantic `Product` model; invalid ids return `422`, missing ids return `404` |
+| API | `GET /api/products`, `GET /api/products/{product_id}`; `GET /health` for infrastructure only |
+| Validation | Pydantic `Product` model; non-integer ids return `422`, missing ids return `404` |
 | Caching | 30 s TTL, lazy expiration, keyed by path + query string, `X-Cache` header |
 | Rate limiting | Fixed 60 s window, 10 requests per client IP, `429` + `Retry-After` |
-| Exemptions | `/health`, `/docs`, `/openapi.json`, `/redoc` are not rate-limited |
-| Tests | 31 pytest tests using an injectable fake clock (no `sleep`) |
+| Frontend | Product grid, detail view (hash routing), cache badge with response time, rate-limit countdown, live demo button |
+| Reverse proxy | nginx serves static files and forwards `/api/...`; the API port is never published |
+| Containers | Multi-stage API image (test and runtime targets), nginx image, Compose with health-based startup order |
+| Tests | 32 pytest tests, runnable locally or inside a Linux container |
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart TD
-    Client["Client (curl, browser, Swagger UI)"] -->|HTTP request| MW["Rate-limit middleware"]
-    MW -->|"exempt path: /health, /docs"| Routes["Route handlers"]
-    MW -->|"over 10 requests in this window"| R429["429 JSON body + Retry-After header"]
-    MW -->|allowed| Routes
-    Routes -->|"/health"| Health["status: ok (never cached)"]
-    Routes -->|"/products and /products/id"| GOC["get_or_compute (cache-aside)"]
-    GOC -->|"key found and not expired"| HIT["Return cached value, X-Cache: HIT"]
-    GOC -->|"key missing or expired"| Data["PRODUCTS dict (data.py)"]
-    Data --> Store["cache.set(key, value)"]
-    Store --> MISS["Return value, X-Cache: MISS"]
-    Data -->|"id not found"| NF["404 (not cached, no X-Cache header)"]
+flowchart LR
+    Browser["Browser"] -->|"localhost:8080"| Nginx
+
+    subgraph Compose["Docker Compose network (private)"]
+        Nginx["web: nginx"]
+        API["api: FastAPI (port 8000, not published)"]
+        Nginx -->|"/api/... (proxy_pass, X-Forwarded-For)"| API
+    end
+
+    Nginx -->|"/, /app.js, /styles.css, /images/*"| Static["Frontend files"]
 ```
 
-The order matters: the rate limiter runs **before** any route, so a blocked request never touches the cache or the data. Cache HITs still count toward the rate limit, because every request costs the server something.
+Inside the API, every request passes through the rate limiter before any route runs:
+
+```mermaid
+flowchart TD
+    Req["Request from nginx"] --> RL["Rate-limit middleware"]
+    RL -->|"/health, /api/docs, /api/openapi.json, /api/redoc"| Routes["Route handlers"]
+    RL -->|"over 10 requests in this window"| R429["429 JSON body + Retry-After"]
+    RL -->|allowed| Routes
+    Routes -->|"/api/products, /api/products/id"| GOC["get_or_compute (cache-aside)"]
+    GOC -->|"live entry"| HIT["Cached value, X-Cache: HIT"]
+    GOC -->|"missing or expired"| Data["PRODUCTS (data.py)"]
+    Data -->|found| MISS["Store in cache, X-Cache: MISS"]
+    Data -->|"not found"| NF["404, not cached"]
+```
+
+**Why two services?** nginx is good at being the public entrance and serving files fast; FastAPI holds the application logic. The browser only ever talks to nginx, the API is unreachable from outside, and because the page and the API share one origin there are no CORS issues.
 
 ---
 
@@ -46,23 +66,32 @@ The order matters: the rate limiter runs **before** any route, so a blocked requ
 ```
 product-catalog-api/
 ├── app/
-│   ├── __init__.py        # marks app/ as a package
-│   ├── models.py          # Product Pydantic model (response schema)
-│   ├── data.py            # 7 static products, dict keyed by id, duplicate-id guard
-│   ├── cache.py           # TTLCache class
-│   ├── rate_limiter.py    # RateLimitResult + FixedWindowRateLimiter
-│   └── main.py            # FastAPI app, routes, cache-aside helper, middleware
+│   ├── __init__.py
+│   ├── models.py            # Product Pydantic model
+│   ├── data.py              # 7 static products, duplicate-id guard
+│   ├── cache.py             # TTLCache
+│   ├── rate_limiter.py      # RateLimitResult + FixedWindowRateLimiter
+│   └── main.py              # app, /api router, cache-aside helper, middleware
+├── frontend/
+│   ├── index.html           # page skeleton
+│   ├── styles.css
+│   ├── app.js               # fetch, rendering, hash routing, badges, countdown, demo
+│   └── images/              # 7 product images (WebP, ~160 KB total)
+├── nginx/
+│   ├── default.conf         # static files + /api reverse proxy
+│   └── Dockerfile           # nginx image with config and frontend baked in
 ├── tests/
-│   ├── conftest.py        # FakeClock, clock fixture, client fixture
-│   ├── test_api.py        # 18 HTTP-level tests
-│   ├── test_cache.py      # 7 TTLCache unit tests
-│   └── test_rate_limiter.py  # 6 rate limiter unit tests
-├── docs/                  # evidence: transcripts and screenshots
+│   ├── conftest.py          # FakeClock, clock and client fixtures
+│   ├── test_api.py          # 19 HTTP-level tests
+│   ├── test_cache.py        # 7 TTLCache unit tests
+│   └── test_rate_limiter.py # 6 rate limiter unit tests
+├── Dockerfile               # API image: base, test, runtime stages
+├── compose.yaml             # production stack: api + web
+├── compose.override.yaml    # development extras: live frontend bind mounts
+├── .dockerignore
 ├── pytest.ini
-├── requirements.txt
-├── Dockerfile             # multi-stage build: base, test, runtime
-├── .dockerignore          # keeps .git, .venv, secrets out of the build
-├── requirements-dev.txt   # requirements.txt + test tools
+├── requirements.txt         # runtime dependencies
+├── requirements-dev.txt     # runtime + test dependencies
 ├── AI_USAGE.md
 ├── NOTES.md
 └── README.md
@@ -70,108 +99,82 @@ product-catalog-api/
 
 ---
 
-## Setup
+## Quick start (Docker Compose)
 
-Requires Python 3.10+ (developed on Python 3.14) and git.
+Requires Docker Desktop (or Docker Engine with the Compose plugin).
 
 ```bash
 git clone https://github.com/hemesh283/Product-Catalog-API.git
 cd Product-Catalog-API
+docker compose up -d --build
+```
+
+Open **http://localhost:8080**. Swagger UI is at **http://localhost:8080/api/docs**.
+
+```bash
+docker compose ps        # both services should show (healthy)
+docker compose logs api  # API request log
+docker compose down      # stop and remove containers and the network
+```
+
+### Development vs production mode
+
+| Command | Files used | Frontend served from |
+| --- | --- | --- |
+| `docker compose up -d` | `compose.yaml` + `compose.override.yaml` (merged automatically) | Your live `frontend/` folder via a read-only bind mount: edit, save, refresh |
+| `docker compose -f compose.yaml up -d` | `compose.yaml` only | The files copied into the `web` image at build time |
+
+The API has no bind mount in either mode, so after changing Python code run `docker compose up -d --build`. After editing `nginx/default.conf` in development mode, run `docker compose restart web` (nginx reads its config only at startup).
+
+`docker compose config` prints the merged configuration Compose will actually use.
+
+### Startup order
+
+`web` declares `depends_on: api: condition: service_healthy`, so nginx starts only after the API's healthcheck passes. Without this, nginx fails at startup with `host not found in upstream "api"`, because it resolves `proxy_pass` hostnames once, when it starts.
+
+---
+
+## Running without Docker
+
+Requires Python 3.10+ (developed on 3.14).
+
+```bash
 python -m venv .venv
 ```
 
-Activate the virtual environment:
-
-| Shell | Command |
+| Shell | Activate |
 | --- | --- |
 | Windows Command Prompt | `.venv\Scripts\activate.bat` |
 | Windows PowerShell | `.\.venv\Scripts\Activate.ps1` |
 | macOS / Linux | `source .venv/bin/activate` |
 
-Install the pinned dependencies:
-
 ```bash
-python -m pip install -r requirements.txt
-```
-
-| Package | Why it is here |
-| --- | --- |
-| `fastapi` | The web framework: routes, validation, `/docs` |
-| `uvicorn[standard]` | The ASGI server; `[standard]` adds `--reload` support |
-| `httpx` | The HTTP client underneath FastAPI's `TestClient` |
-| `pytest` | Test runner |
-
----
-
-## Run
-
-```bash
+python -m pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
-- API: http://127.0.0.1:8000
-- Interactive docs (Swagger UI): http://127.0.0.1:8000/docs
+The API runs at http://127.0.0.1:8000 with Swagger at http://127.0.0.1:8000/api/docs. The frontend needs nginx, so use Docker Compose to see it.
+
+| Package | Why it is here |
+| --- | --- |
+| `fastapi` | Web framework: routes, validation, OpenAPI docs |
+| `uvicorn[standard]` | ASGI server; `[standard]` adds `--reload` and faster parsers |
+| `httpx` | HTTP client underneath FastAPI's `TestClient` (dev only) |
+| `pytest` | Test runner (dev only) |
 
 ---
 
-## Run with Docker
-
-### From Docker Hub (no clone needed)
-
-```bash
-docker run -d --name catalog -p 8000:8000 hemesh283/product-catalog-api:1.0.0
-```
-
-Then open http://localhost:8000/docs. Stop it with `docker stop catalog && docker rm catalog`.
-
-### Build it yourself
-
-The `Dockerfile` has three stages:
-
-| Stage | Contents | Purpose |
-| --- | --- | --- |
-| `base` | `python:3.14-slim` + production dependencies | Shared, cached by both targets |
-| `test` | `base` + `httpx`, `pytest`, `tests/` | Runs the test suite on Linux |
-| `runtime` | `base` + `app/` only, non-root user, healthcheck | The image that ships |
-
-```bash
-# Run the tests inside a container
-docker build --target test -t catalog-api:test .
-docker run --rm catalog-api:test
-
-# Build and run the app
-docker build --target runtime -t catalog-api:latest .
-docker run -d --name catalog -p 8000:8000 catalog-api:latest
-docker ps    # STATUS shows (healthy) once the healthcheck passes
-```
-
-### Image design decisions
-
-- **Slim base image:** smaller pulls and a smaller attack surface than the full Python image.
-- **Dependencies before code:** `requirements.txt` is copied and installed before `app/`, so code changes reuse the cached dependency layer.
-- **No tests in the runtime image:** the `runtime` stage copies only `app/`.
-- **Non-root user:** the app runs as `appuser`; the code is owned by root, so the app cannot modify itself.
-- **Healthcheck:** Docker polls `/health` every 30 s using Python's `urllib` (the slim image has no `curl`). `/health` is exempt from rate limiting, so health checks can never trigger a 429.
-- **`--host 0.0.0.0`:** inside a container, `127.0.0.1` is the container's own loopback and is unreachable through port mapping.
-- **One worker:** the cache and rate-limit counters live in process memory, so multiple workers would each keep separate counters and loosen the limit.
-
 ## API reference
 
-### `GET /health`
+All product routes live under `/api` (changed in 2.0.0; see [Versions](#versions)).
 
-Liveness check for load balancers and monitors. Never cached, never rate-limited.
+### `GET /api/products`
 
-```json
-{"status": "ok"}
-```
+All 7 products. Cached for 30 seconds.
 
-### `GET /products`
+### `GET /api/products/{product_id}`
 
-Returns all 7 products. Cached for 30 seconds.
-
-### `GET /products/{product_id}`
-
-Returns one product. Cached for 30 seconds per id.
+One product. Cached for 30 seconds per id.
 
 ```json
 {
@@ -179,11 +182,16 @@ Returns one product. Cached for 30 seconds per id.
   "name": "27-inch Monitor",
   "description": "1440p IPS monitor with 165Hz refresh rate.",
   "price_paise": 1599900,
-  "image_url": "https://example.com/images/monitor.jpg"
+  "image_url": "/images/monitor.webp"
 }
 ```
 
-Prices are stored as integer **paise** (₹15,999.00 = `1599900`) because floating-point numbers cannot represent money exactly.
+- Prices are integer **paise** (₹15,999.00 = `1599900`), because floating-point numbers cannot represent money exactly. The frontend formats them with `Intl.NumberFormat("en-IN")`.
+- `image_url` is a relative path served by nginx; the API never sends image bytes.
+
+### `GET /health`
+
+Liveness check, `{"status": "ok"}`. Used by Docker's healthcheck and Compose startup order. It stays at the root (not under `/api`), is exempt from rate limiting, and is **not exposed through nginx**.
 
 ### Responses
 
@@ -191,7 +199,7 @@ Prices are stored as integer **paise** (₹15,999.00 = `1599900`) because floati
 | --- | --- | --- |
 | `200` | Success | Product or list of products |
 | `404` | Valid id, but no such product | `{"detail": "Product 999 not found"}` |
-| `422` | Id is not an integer (e.g. `/products/abc`) | FastAPI validation error with `loc`, `msg`, `input` |
+| `422` | Id is not an integer (`/api/products/abc`) | FastAPI validation error with `loc`, `msg`, `input` |
 | `429` | More than 10 requests in the current window | See below |
 
 ```json
@@ -203,51 +211,48 @@ Prices are stored as integer **paise** (₹15,999.00 = `1599900`) because floati
 }
 ```
 
-The `429` response also carries a `Retry-After: 55` header (seconds until the next window).
+The `429` also carries a `Retry-After: 55` header (seconds until the next window).
 
 ---
 
 ## How caching works
 
-### Why cache
+### Why cache, and why a TTL
 
-A cache keeps a copy of a result so the next identical request skips the expensive work. In this project the "work" is a dictionary lookup, so the cache does not make anything faster; it demonstrates the pattern. In a real system the same code would sit in front of a database query taking 20-50 ms and adding load to a shared database, replacing it with a memory read taking microseconds.
-
-### Why a TTL
-
-A cache that never expires serves stale data forever. A **time to live** caps staleness: data is at most 30 seconds old. It is a deliberate trade-off: a longer TTL means less backend load but staler data; a shorter TTL means fresher data but more load.
+A cache keeps a copy of a result so the next identical request skips the work. Here the "work" is a dictionary lookup, so the cache demonstrates the pattern rather than speeding anything up; in front of a database query taking 20-50 ms it would replace that with a memory read taking microseconds. A **time to live** caps staleness: data is at most 30 seconds old. Longer TTLs mean less load but staler data; shorter TTLs mean fresher data but more load.
 
 ### Design
 
-- **Storage:** a plain Python dict mapping `key -> (value, expires_at)`. Storing the deadline (rather than the creation time) makes the expiry check one comparison and allows per-key TTLs later.
-- **Clock:** `time.monotonic()`, not `time.time()`. The wall clock can jump (NTP sync, manual changes); a monotonic clock never goes backwards, so measured durations are always true.
-- **Injectable clock:** `TTLCache(ttl_seconds, clock=time.monotonic)`. Tests pass a fake clock and move time forward instantly.
-- **Lazy expiration:** an expired entry is deleted when someone reads it. No background thread is needed.
-- **Boundary:** an entry is expired only when `now > expires_at`, so a request at exactly 30 seconds is still a HIT and one at 31 seconds is a MISS.
+- **Storage:** a dict mapping `key -> (value, expires_at)`. Storing the deadline makes the expiry check one comparison.
+- **Clock:** `time.monotonic()`, which never jumps backwards, unlike the wall clock. It is injectable, so tests pass a fake clock.
+- **Lazy expiration:** an expired entry is deleted when it is next read.
+- **Boundary:** expired only when `now > expires_at`, so a request at exactly 30 s is still a HIT and one at 31 s is a MISS.
 - **Fail fast:** a TTL of zero or less raises `ValueError` at startup.
 
 ### Wiring: cache-aside
 
-Both product routes call one helper, `get_or_compute`:
+Both product routes call `get_or_compute`:
 
-1. Build the key from the request (**path + query string**, without the host, so `localhost` and `127.0.0.1` share one entry).
-2. If the cache has a live entry, return it with `X-Cache: HIT`.
+1. Build the key from the request: **path + query string**, without the host (so `localhost` and `127.0.0.1` share one entry).
+2. If there is a live entry, return it with `X-Cache: HIT`.
 3. Otherwise run the real work, store the result, and return it with `X-Cache: MISS`.
 
-The order on a MISS is **compute, store, set header**. If the lookup raises the 404, the function exits before storing or setting the header, so 404s are never cached and never carry `X-Cache`. Not caching 404s means a newly added product becomes visible immediately.
-
-### Example
+The order on a MISS is **compute, store, set header**. If the lookup raises a 404, nothing is stored and no header is set, so 404s are never cached and a newly added product appears immediately.
 
 ```
-t = 0 s    GET /products/3   ->  X-Cache: MISS   (stored, expires at t = 30)
-t = 10 s   GET /products/3   ->  X-Cache: HIT
-t = 30 s   GET /products/3   ->  X-Cache: HIT    (boundary: not yet expired)
-t = 31 s   GET /products/3   ->  X-Cache: MISS   (expired, deleted, recomputed)
+t = 0 s    GET /api/products/3   ->  X-Cache: MISS   (expires at t = 30)
+t = 10 s   GET /api/products/3   ->  X-Cache: HIT
+t = 30 s   GET /api/products/3   ->  X-Cache: HIT    (boundary)
+t = 31 s   GET /api/products/3   ->  X-Cache: MISS   (expired, recomputed)
 ```
 
-### Where the cache lives
+### Three cache layers in this project
 
-The cache is a dict in the RAM of the Uvicorn process. That means it is lost on restart (including `--reload`), and it is private to one process: with several workers or servers, each has its own cache. See [Known limitations](#known-limitations).
+| Layer | Where it lives | What it caches |
+| --- | --- | --- |
+| Browser cache | The user's browser | Images, CSS and JS, using the `ETag` and `Last-Modified` headers nginx adds to static files |
+| TTL cache | Memory of the API process | `/api/products` responses for 30 s, shared by all users |
+| nginx | n/a | Nothing: it reads static files from disk on each request |
 
 ---
 
@@ -255,40 +260,73 @@ The cache is a dict in the RAM of the Uvicorn process. That means it is lost on 
 
 ### Why rate limit
 
-Without a limit, one client can send unlimited requests. Rate limiting protects against abuse (scrapers, denial-of-service attempts) and brute-force attacks, keeps the service fair between users, and controls cost.
+Without a limit, one client can send unlimited requests. Rate limiting protects against abuse and brute force, keeps the service fair, and controls cost.
 
 ### The fixed-window algorithm
 
-Time is cut into fixed 60-second windows. Each client gets a counter per window. Requests 1-10 in a window pass; request 11 onward gets `429` until the next window starts and the counter resets.
+Time is cut into fixed 60-second windows, and each client gets a counter per window. Requests 1-10 pass; request 11 onward gets `429` until the next window starts. The current window is `int(now // 60)`.
 
 ```
-window 0: [0 s ......... 60 s)     window 1: [60 s ......... 120 s)
-client A: 1 2 3 ... 10 ok, 11 -> 429   counter resets -> 1 2 3 ... ok
+window 0: [0 s ......... 60 s)         window 1: [60 s ......... 120 s)
+client A: 1 2 3 ... 10 ok, 11 -> 429    counter resets -> 1 2 3 ... ok
 ```
-
-The current window is `int(now // 60)` (floor division), which is correct at every boundary: 59.9 is window 0, 60.0 is window 1.
 
 ### Design
 
-- **Storage:** one entry per client, `client_ip -> (window_id, count)`. When a request arrives in a newer window, the entry is overwritten with `(new_window, 1)`, so old windows clean themselves up.
-- **Result object:** `check()` returns a frozen dataclass `RateLimitResult(allowed, retry_after)`, so the middleware gets the decision and the wait time without repeating the window maths.
-- **`Retry-After` is rounded up** with `math.ceil`. A client blocked at t = 125.7 in a window ending at 180 is told 55, not 54; a client that waited 54 seconds would arrive at 179.7, still inside the same window, and be blocked again.
-- **Fail fast:** a limit or window of zero or less raises `ValueError`.
+- **Storage:** one entry per client, `client_ip -> (window_id, count)`, overwritten when a new window starts.
+- **Result object:** `check()` returns `RateLimitResult(allowed, retry_after)`.
+- **`Retry-After` is rounded up** (`math.ceil`), so a client that waits exactly that long lands in the next window.
+- **Middleware:** runs before every route, so blocked requests never touch the cache or data. It **returns** a `JSONResponse(429)` rather than raising `HTTPException`, because middleware runs outside FastAPI's exception handlers.
+- **Per IP, across all routes:** `/api/products` and `/api/products/3` share one quota. Cache HITs still count.
 
-### Why middleware
+### Exemptions
 
-The limiter runs as FastAPI HTTP middleware (the equivalent of a Spring `Filter`), so it applies to every route uniformly and rejects requests before any real work happens, even for unknown paths.
-
-The middleware **returns** a `JSONResponse(status_code=429)` instead of raising `HTTPException`. FastAPI's exception handlers wrap the routes, but middleware runs outside them, so an exception raised there would surface as a `500`.
-
-### What is exempt, and why
-
-| Path | Why exempt |
+| Path | Why |
 | --- | --- |
-| `/health` | Load balancers and Kubernetes probe it every few seconds. Throttling it would make a healthy server look dead and get it removed from rotation. |
-| `/docs`, `/openapi.json`, `/redoc` | Developer convenience: opening the docs page fires several requests that would otherwise use up the quota. |
+| `/health` | Docker and load balancers poll it constantly; throttling it would make a healthy service look dead |
+| `/api/docs`, `/api/openapi.json`, `/api/redoc` | Developer convenience |
 
-The limit is **per client IP across all routes**, not per endpoint: requests to `/products` and `/products/3` share the same 10.
+Only requests that reach the API count. Pages, scripts and images are served by nginx and never touch the limiter.
+
+---
+
+## Reverse proxy and real client IPs
+
+In `nginx/default.conf`:
+
+```nginx
+location /api/ {
+    proxy_pass http://api:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+- `api` is the Compose service name; Docker's internal DNS resolves it.
+- **No trailing slash** after `8000`, so `/api/products/3` is forwarded unchanged. With `http://api:8000/` nginx would strip the `/api/` prefix.
+- **`X-Forwarded-For $remote_addr` overwrites** any value the client sent. nginx is the edge proxy, so appending (`$proxy_add_x_forwarded_for`) would let clients forge their IP and dodge the rate limit.
+- Uvicorn runs with `--proxy-headers --forwarded-allow-ips "*"`, so `request.client.host` becomes the forwarded IP. Trusting every sender is safe **only** because the API port is not published: nginx is the only thing that can reach it.
+
+Verified: the API logs the IP nginx saw (`172.18.0.1`, Docker's gateway when testing locally), not nginx's own container IP (`172.18.0.3`).
+
+---
+
+## Frontend
+
+Plain HTML, CSS and JavaScript, no framework. nginx serves the files; `app.js` fetches data from the API and builds the page (client-side rendering).
+
+| Feature | How it works |
+| --- | --- |
+| Product grid | `fetch("/api/products")`, one card per product; CSS grid adapts columns to screen width |
+| Detail view | Hash routing: `/#/products/3`. The part after `#` never reaches the server; a `hashchange` listener redraws the view, and the Back button works |
+| Cache badge | Reads the `X-Cache` response header (possible because the page and API share one origin) and shows HIT or MISS with the round-trip time |
+| Rate-limit message | A `RateLimitError` carries `Retry-After`; the page counts down and reloads automatically |
+| Demo button | Sends 11 requests one after another (`await` inside a loop) and shows each status as a coloured chip |
+
+- API data is inserted with `textContent`, never `innerHTML`, so product text can never run as script (XSS prevention).
+- Product images were AI-generated (ChatGPT), renamed to lowercase names without spaces (Linux file names are case-sensitive), and converted to 600 px WebP, reducing them from 15 MB to about 160 KB.
+- The response time shown is measured in the browser from `fetch()` until the response headers arrive, so it differs slightly from DevTools' "Time" column, which also includes the body download.
 
 ---
 
@@ -298,62 +336,85 @@ The limit is **per client IP across all routes**, not per endpoint: requests to 
 pytest -v
 ```
 
-31 tests, under one second, no real waiting:
+32 tests, under one second, no real waiting:
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `tests/test_api.py` | 18 | Endpoints, 404, 422, MISS/HIT, expiry at 31 s, HIT at exactly 30 s, 404s not cached, 429 body and header, `Retry-After` rounding, window reset, shared limit across routes, `/health` exemption in both directions |
-| `tests/test_cache.py` | 7 | `TTLCache` directly: miss, hit, lazy deletion, re-set refreshes expiry, `clear`, invalid TTL |
-| `tests/test_rate_limiter.py` | 6 | Limiter directly: limit pattern, separate counters per client, window overwrite, invalid config |
+| `tests/test_api.py` | 19 | Endpoints, 404, 422, old unprefixed path returns 404, MISS/HIT, expiry at 31 s, HIT at exactly 30 s, 404s not cached, 429 body and header, `Retry-After` rounding, window reset, shared limit across routes, `/health` exemption |
+| `tests/test_cache.py` | 7 | `TTLCache` directly |
+| `tests/test_rate_limiter.py` | 6 | Limiter directly, including separate counters per client |
 
-### How time is tested without sleeping
+`tests/conftest.py` defines a `FakeClock` that only moves when a test calls `clock.advance(seconds)`. The `client` fixture uses `monkeypatch` to swap in a fresh cache and rate limiter built on that clock for every test.
 
-`tests/conftest.py` defines a `FakeClock` whose time only moves when a test calls `clock.advance(seconds)`. The `client` fixture uses pytest's `monkeypatch` to replace the app's `cache` and `rate_limiter` with fresh instances built on that fake clock, then restores the originals after each test. Every test therefore starts with an empty cache, zero request counts, and time frozen at 0.
+Run the same tests inside a Linux container:
 
-### Mutation testing
+```bash
+docker build --target test -t catalog-api:test .
+docker run --rm catalog-api:test
+```
 
-The boundary tests were checked by deliberately breaking the code:
-
-| Mutation | Caught by |
-| --- | --- |
-| Cache expiry `>` changed to `>=` | `test_cache_still_hits_at_exactly_ttl` |
-| `math.ceil` changed to `int` | `test_retry_after_is_rounded_up` |
-| Limit check `<=` changed to `<` (limit becomes 9) | `test_eleventh_request_is_rate_limited` |
+Proxy-header behaviour cannot be tested with `TestClient` (it calls the app without Uvicorn), so it was verified manually through nginx.
 
 ---
 
-## Evidence
+## Docker images
 
-Manual test transcripts and screenshots (cache MISS -> HIT -> MISS, ten `200`s followed by `429`, `/health` while rate-limited, test run output) are in [`docs/evidence.md`](docs/evidence.md).
+### API (`Dockerfile`)
+
+| Stage | Contents | Purpose |
+| --- | --- | --- |
+| `base` | `python:3.14-slim` + runtime dependencies | Shared and cached by both targets |
+| `test` | `base` + `httpx`, `pytest`, `tests/` | Runs the test suite |
+| `runtime` | `base` + `app/` only, non-root user, healthcheck | The image that ships |
+
+- Dependencies are installed before code is copied, so code changes reuse the cached dependency layer.
+- Runs as `appuser`; the code is owned by root, so the app cannot modify itself.
+- `--host 0.0.0.0`: inside a container, `127.0.0.1` is unreachable through port mapping.
+- One Uvicorn worker, because the cache and counters live in process memory.
+
+### Web (`nginx/Dockerfile`)
+
+`nginx:1.30.6-alpine` with `default.conf` and the `frontend/` folder copied in. The image's own `nginx.conf` already provides worker processes, connections and MIME types; `default.conf` only adds the `server` block, which is included inside its `http` block.
+
+### Published images
+
+| Version | Images |
+| --- | --- |
+| 1.0.0 | `hemesh283/product-catalog-api:1.0.0` (API only, routes at the root) |
+| 2.0.0 | `hemesh283/product-catalog-api:2.0.0`, `hemesh283/product-catalog-web:2.0.0` |
+
+Compose names images `...:${TAG:-dev}`, so a release build is `TAG=2.0.0 docker compose build`.
+
+---
+
+## Versions
+
+| Version | Changes |
+| --- | --- |
+| `v1.0-assignment` | Original assignment submission: API, cache, rate limiter, tests, docs |
+| `1.0.0` | Containerized API, published to Docker Hub |
+| `2.0.0` | **Breaking:** product routes moved to `/api/...`. Added frontend, nginx reverse proxy, Docker Compose, real-client-IP forwarding, local WebP images |
 
 ---
 
 ## Known limitations
 
-These are deliberate simplifications for an assignment-sized project, and what a production system would do instead.
-
 | Limitation | Why it happens | Production approach |
 | --- | --- | --- |
-| **Burst at window edges** | 10 requests at 0:59 and 10 at 1:01 all pass: up to 2x the limit in 2 seconds | Sliding window (count the last 60 s from now) or token bucket (steady refill, capped bursts) |
-| **State is per process** | Cache and counters are dicts in one process's memory. With 4 workers, a client effectively gets 40 requests per minute, and each worker has its own cache (lower hit rate, possibly inconsistent data) | A shared store such as Redis, with atomic increments and built-in key expiry |
-| **Lost on restart** | In-memory state disappears when the process stops | Redis or another external store |
-| **Client IP behind a proxy** | `request.client.host` is whoever opened the connection. Behind a load balancer, or through Docker's port mapping (every outside request arrives from the bridge gateway `172.17.0.1`), all users share one IP and one limit | Put a reverse proxy in front that sets `X-Forwarded-For`, and trust it only from that proxy |
-| **Memory growth** | Expired cache entries that are never read again, and clients who never return, stay in memory | Periodic sweep, size cap with LRU eviction, or Redis TTLs |
-| **Thread safety** | Plain `def` routes run in a thread pool, so the cache dict can be accessed from several threads at once | A lock around cache access, or an external store with atomic operations |
-| **Window alignment** | `time.monotonic()` starts from an arbitrary origin, so windows do not align with clock minutes (and differ between machines) | Acceptable for a single process; a shared store gives one clock for all servers |
-| **Cache key normalisation** | `?a=1&b=2` and `?b=2&a=1` are different keys | Sort query parameters when building the key |
-| **Floating base image tag** | `python:3.14-slim` always points to the newest 3.14 patch, so rebuilds can differ | Pin a full tag (`python:3.14.10-slim`) or an image digest |
+| Burst at window edges | 10 requests at 0:59 and 10 at 1:01 all pass: up to 2x the limit in 2 seconds | Sliding window or token bucket |
+| State is per process | Cache and counters are dicts in one process; several workers or containers would each keep their own (looser limit, lower hit rate) | A shared store such as Redis |
+| Lost on restart | In-memory state disappears when the container restarts | Redis or another external store |
+| Local client IP | Behind Docker Desktop's port mapping, nginx itself sees the gateway IP, so all local users share one limit | On a real server nginx receives client connections directly; no code change needed |
+| nginx caches DNS | nginx resolves `api` once at startup; if the API container gets a new IP, nginx returns 502 until restarted | The `resolver` directive with a variable in `proxy_pass` |
+| Memory growth | Expired cache entries never read again, and clients who never return, stay in memory | Periodic sweep, LRU size cap, or Redis TTLs |
+| Thread safety | Plain `def` routes run in a thread pool, so the cache dict can be touched from several threads | A lock, or an external store with atomic operations |
+| Frontend refetches | Returning to the grid re-requests data the page already had, using rate-limit quota | A client-side cache in JavaScript |
+| Cache key normalisation | `?a=1&b=2` and `?b=2&a=1` are different keys | Sort query parameters when building the key |
+| Floating Python base tag | `python:3.14-slim` points to the newest 3.14 patch, so rebuilds can differ | Pin a full tag or an image digest (nginx is already pinned) |
+| No HTTPS | `localhost` has no domain to certify | Terminate TLS at nginx with a certificate (for example Let's Encrypt) when deployed |
 
 ---
 
 ## AI usage
 
-This project was built with AI assistance as part of the assignment. What was asked, what was suggested, and what I changed or verified is documented step by step in [`AI_USAGE.md`](AI_USAGE.md). Design decisions and bugs encountered are recorded in [`NOTES.md`](NOTES.md).
-
-Install the pinned dependencies (app + test tools):
-
-```bash
-python -m pip install -r requirements-dev.txt
-```
-
-`requirements.txt` holds only what the app needs to run (used by the Docker image); `requirements-dev.txt` adds `httpx` and `pytest` on top of it.
+Built with AI assistance as a learning exercise. What was asked, what was suggested, and what I changed or verified is documented in [`AI_USAGE.md`](AI_USAGE.md). Design decisions and bugs are recorded in [`NOTES.md`](NOTES.md).

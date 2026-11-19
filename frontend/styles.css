@@ -1,0 +1,34 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; }
+header { background: #1d1d1f; color: #fff; padding: 16px 24px; }
+header h1 { margin: 0; font-size: 1.4rem; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+.card { background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+.card img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; background: #eee; }
+.card-body { padding: 12px 14px; }
+.card h2 { font-size: 1rem; margin: 0 0 6px; }
+.price { font-weight: 600; margin: 0; }
+a { color: inherit; text-decoration: none; }
+.card { display: block; transition: transform 0.15s; }
+.card:hover { transform: translateY(-3px); }
+.back { display: inline-block; margin-bottom: 16px; font-weight: 600; }
+.detail { display: grid; grid-template-columns: 1fr 1fr; background: #fff; border-radius: 12px; overflow: hidden; }
+.detail img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; }
+.detail-info { padding: 24px; }
+.detail-info h2 { margin-top: 0; }
+.detail-info .price { font-size: 1.4rem; }
+@media (max-width: 640px) { .detail { grid-template-columns: 1fr; } }
+.meta { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 0.9rem; color: #555; min-height: 1.6em; }
+.badge { padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 0.8rem; }
+.badge.hit { background: #d1f5dc; color: #116329; }
+.badge.miss { background: #fde2c8; color: #8a4b00; }
+.notice { background: #fff4e5; border: 1px solid #f5c48a; border-radius: 12px; padding: 16px 20px; max-width: 520px; }
+.notice p { margin: 6px 0 0; }
+.demo { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 20px; }
+.demo button { padding: 8px 16px; border: 0; border-radius: 8px; background: #1d1d1f; color: #fff; font-weight: 600; cursor: pointer; }
+.demo button:disabled { opacity: 0.5; cursor: default; }
+.demo-results { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.demo-results li { padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+.demo-results li.ok { background: #d1f5dc; color: #116329; }
+.demo-results li.blocked { background: #fde2c8; color: #8a4b00; }
