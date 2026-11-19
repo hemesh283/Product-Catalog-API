@@ -183,3 +183,36 @@ async function router() {
 
 window.addEventListener("hashchange", router);
 router();
+
+const demoButton = document.getElementById("demo-button");
+const demoResults = document.getElementById("demo-results");
+
+async function runRateLimitDemo() {
+  demoButton.disabled = true;
+  demoResults.replaceChildren();
+
+  for (let i = 1; i <= 11; i++) {
+    const item = document.createElement("li");
+    try {
+      const response = await fetch("/api/products");
+      if (response.ok) {
+        item.className = "ok";
+        item.textContent = `${i}: ${response.status}`;
+      } else {
+        const retryAfter = response.headers.get("Retry-After");
+        item.className = "blocked";
+        item.textContent = retryAfter
+          ? `${i}: ${response.status} (retry in ${retryAfter} s)`
+          : `${i}: ${response.status}`;
+      }
+    } catch (error) {
+      item.className = "blocked";
+      item.textContent = `${i}: network error`;
+    }
+    demoResults.append(item);
+  }
+
+  demoButton.disabled = false;
+}
+
+demoButton.addEventListener("click", runRateLimitDemo);
