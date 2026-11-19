@@ -1,4 +1,5 @@
 const statusEl = document.getElementById("status");
+const metaEl = document.getElementById("meta");
 const viewEl = document.getElementById("view");
 
 const priceFormatter = new Intl.NumberFormat("en-IN", {
@@ -11,11 +12,27 @@ function formatPrice(paise) {
 }
 
 async function fetchJson(url) {
+  const started = performance.now();
   const response = await fetch(url);
+  const elapsedMs = Math.round(performance.now() - started);
+
   if (!response.ok) {
     throw new Error(`Request failed with status ${response.status}`);
   }
-  return response.json();
+
+  const data = await response.json();
+  return { data, cache: response.headers.get("X-Cache"), elapsedMs };
+}
+
+function renderMeta({ cache, elapsedMs }) {
+  metaEl.replaceChildren();
+  if (!cache) {
+    return;
+  }
+  const badge = document.createElement("span");
+  badge.className = cache === "HIT" ? "badge hit" : "badge miss";
+  badge.textContent = `Cache ${cache}`;
+  metaEl.append(badge, `${elapsedMs} ms`);
 }
 
 function createImage(product) {
@@ -83,15 +100,18 @@ function renderDetail(product) {
 async function router() {
   const match = location.hash.match(/^#\/products\/(\d+)$/);
   statusEl.textContent = "Loading…";
+  metaEl.replaceChildren();
   viewEl.replaceChildren();
 
   try {
     if (match) {
-      const product = await fetchJson(`/api/products/${match[1]}`);
-      renderDetail(product);
+      const result = await fetchJson(`/api/products/${match[1]}`);
+      renderDetail(result.data);
+      renderMeta(result);
     } else {
-      const products = await fetchJson("/api/products");
-      renderGrid(products);
+      const result = await fetchJson("/api/products");
+      renderGrid(result.data);
+      renderMeta(result);
     }
     statusEl.textContent = "";
   } catch (error) {
